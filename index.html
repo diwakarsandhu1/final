@@ -1,0 +1,390 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>A Day in the Life of WPI Students</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Playball&family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&display=swap"
+      rel="stylesheet"
+    />
+
+    <style>
+      :root {
+        --bg: #ffffff;
+        --text: #1e1e1e;
+        --muted: #5a5a5a;
+        --card: #ffffff;
+        --border: rgba(0, 0, 0, 0.12);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        min-height: 100vh;
+        font-family: "Source Serif 4", serif;
+      }
+
+      .container {
+        max-width: 1100px;
+        margin: 0 auto;
+        padding: 28px 18px 40px;
+        display: flex;
+        flex-direction: column;
+        gap: 18px;
+        min-height: 100vh;
+      }
+
+      header {
+        text-align: center;
+        padding-top: 8px;
+      }
+
+      h1 {
+        margin: 0;
+        font-family: "Playball", cursive;
+        font-size: clamp(2.4rem, 4vw, 3.4rem);
+        font-weight: 400;
+        letter-spacing: 0.2px;
+      }
+
+      .subtitle {
+        margin-top: 6px;
+        color: var(--muted);
+        font-size: 1rem;
+      }
+
+      .description {
+        background: transparent;
+        border: none;
+        border-radius: 0;
+        padding: 0;
+        line-height: 1.55;
+        font-size: 1.05rem;
+        text-align: justify;
+      }
+
+      /* make the viz frame a column: controls on top, svg fills rest */
+      .viz-frame {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        padding: 18px;
+        min-height: 520px;
+      }
+
+      /* controls styling */
+      #controls {
+        display: flex;
+        gap: 12px;
+        align-items: center;
+      }
+
+      #timeSlider {
+        flex: 1;
+      }
+
+      #chart {
+        width: 100%;
+        flex: 1; /* fill remaining space in viz-frame */
+        min-height: 450px;
+      }
+
+      footer {
+        text-align: center;
+        color: var(--muted);
+        font-size: 0.9rem;
+        padding-top: 6px;
+      }
+    </style>
+  </head>
+
+  <body>
+    <div class="container">
+      <header>
+        <h1>A Day in the Life of WPI Students</h1>
+        <div class="subtitle">
+          An interactive look at how WPI students spend their time
+        </div>
+      </header>
+
+      <section class="description">
+        <p style="margin: 0">
+          “A Day in the Life of WPI Students” is an interactive data
+          visualization project that explores how students at Worcester
+          Polytechnic Institute spend their time across a typical day. College
+          schedules can vary widely depending on classes, studying, work, and
+          extracurricular activities, and it can be hard to understand the
+          overall rhythm of student life beyond personal anecdotes. By
+          collecting anonymous time-use schedules from WPI students and
+          visualizing them across the 24-hour day, this project aims to reveal
+          common patterns (like when students are most often in class, studying,
+          eating, or sleeping) and show how routines differ across groups such
+          as class year, living situation, and campus involvement.
+        </p>
+      </section>
+
+      <main class="viz-frame" id="viz">
+        <div id="controls">
+          <button id="playBtn">Play</button>
+          <input
+            id="timeSlider"
+            type="range"
+            min="0"
+            max="23"
+            step="1"
+            value="0"
+          />
+          <span id="timeLabel">12am-1am</span>
+        </div>
+
+        <svg id="chart"></svg>
+      </main>
+
+      <footer>Data source: WPI student time-use survey</footer>
+    </div>
+
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <script>
+      const HOUR_COLS = [
+        "12am-1am",
+        "1am-2am",
+        "2am-3am",
+        "3am-4am",
+        "4am-5am",
+        "5am-6am",
+        "6am-7am",
+        "7am-8am",
+        "8am-9am",
+        "9am-10am",
+        "10am-11am",
+        "11am-12pm",
+        "12pm-1pm",
+        "1pm-2pm",
+        "2pm-3pm",
+        "3pm-4pm",
+        "4pm-5pm",
+        "5pm-6pm",
+        "6pm-7pm",
+        "7pm-8pm",
+        "8pm-9pm",
+        "9pm-10pm",
+        "10pm-11pm",
+        "11pm-12am",
+      ];
+
+      const svg = d3.select("#chart");
+      const vizEl = document.getElementById("viz");
+      const slider = d3.select("#timeSlider");
+      const playBtn = d3.select("#playBtn");
+      const timeLabel = d3.select("#timeLabel");
+
+      let width, height, margin, innerW, innerH;
+
+      function resize() {
+        const rect = svg.node().getBoundingClientRect();
+        width = rect.width;
+        height = rect.height;
+
+        margin = { top: 20, right: 20, bottom: 20, left: 160 };
+        innerW = width - margin.left - margin.right;
+        innerH = height - margin.top - margin.bottom;
+
+        svg.attr("viewBox", `0 0 ${width} ${height}`);
+      }
+      
+      resize();
+
+      window.addEventListener("resize", () => {
+        resize();
+        render(currentHour);
+      });
+
+      const g = svg.append("g").attr("transform", `translate(${margin.left},${margin.top})`);
+      const laneAxisG = g.append("g");
+      const dotsG = g.append("g");
+
+      let data = [];
+      let activities = [];
+      let y = null;
+      let color = null;
+      let currentHour = 0;
+      let timer = null;
+
+      // Load clean data
+      d3.csv("/data/clean_data.csv").then((raw) => {
+        
+        // Assign an id per row
+        raw.forEach((d, i) => (d.respondent_id = i));
+
+        // Compact schedule array for each respondent: [hour0..hour23] = activity
+        data = raw.map((d) => ({
+          id: d.respondent_id,
+          schedule: HOUR_COLS.map((h) => (d[h] ?? "").trim()),
+        }));
+
+        const EXCLUDE = new Set(["Other (Please Specify Below)"]);
+
+        // Collect unique activities (exclude blanks)
+        const set = new Set();
+        data.forEach((p) =>
+          p.schedule.forEach((a) => {
+            if (a && !EXCLUDE.has(a)) set.add(a);
+          }),
+        );
+        activities = Array.from(set);
+
+        // Scales
+        y = d3
+          .scaleBand()
+          .domain(activities)
+          .range([0, innerH])
+          .paddingInner(0.15);
+
+        color = d3
+          .scaleOrdinal()
+          .domain(activities)
+          .range(d3.schemeTableau10.concat(d3.schemeSet3));
+
+        // Draw initial axes and dots
+        renderAxis();
+        initDots();
+        render(0);
+
+        // Controls
+        slider.on("input", (event) => {
+          currentHour = +event.target.value;
+          stop();
+          render(currentHour);
+        });
+
+        playBtn.on("click", () => {
+          if (timer) stop();
+          else play();
+        });
+      });
+
+      function renderAxis() {
+        laneAxisG.selectAll("*").remove();
+
+        // Lane separators
+        laneAxisG
+          .selectAll("line.lane")
+          .data(activities)
+          .join("line")
+          .attr("class", "lane")
+          .attr("x1", -margin.left + 10)
+          .attr("x2", innerW)
+          .attr("y1", (d) => y(d) + y.bandwidth())
+          .attr("y2", (d) => y(d) + y.bandwidth())
+          .attr("stroke", "rgba(0,0,0,0.08)");
+
+        // Labels
+        laneAxisG
+          .selectAll("text.label")
+          .data(activities)
+          .join("text")
+          .attr("class", "label")
+          .attr("x", -12)
+          .attr("y", (d) => y(d) + y.bandwidth() / 2)
+          .attr("text-anchor", "end")
+          .attr("dominant-baseline", "middle")
+          .style("font-family", "Source Serif 4, serif")
+          .style("font-size", "12px")
+          .style("fill", "rgba(0,0,0,0.75)")
+          .text((d) => d);
+      }
+
+      function initDots() {
+        dotsG
+          .selectAll("circle.dot")
+          .data(data, (d) => d.id)
+          .join("circle")
+          .attr("class", "dot")
+          .attr("r", 4)
+          .attr("cx", innerW / 2)
+          .attr("cy", innerH / 2)
+          .attr("fill", "#999")
+          .attr("opacity", 0.9);
+      }
+
+      function hourLabel(h) {
+        return HOUR_COLS[h] || `Hour ${h}`;
+      }
+
+    
+      function positionsForHour(h) {
+        if (!y) return new Map();
+        const byAct = d3.group(data, (d) => d.schedule[h] || "(Missing)");
+
+        let domain = activities.slice();
+        if (byAct.has("(Missing)") && !domain.includes("(Missing)"))
+          domain = domain.concat(["(Missing)"]);
+
+        y.domain(domain).range([0, innerH]);
+        renderAxis();
+
+        const pos = new Map();
+        domain.forEach((act) => {
+          const people = byAct.get(act) || [];
+          const n = people.length;
+
+    
+          const cols = Math.max(1, Math.floor(innerW / 12));
+          people.forEach((p, i) => {
+            const col = i % cols;
+            const row = Math.floor(i / cols);
+
+            const x = (col + 0.5) * (innerW / cols) + (Math.random() - 0.5) * 3;
+            const yPos = (y(act) ?? 0) + 10 + row * 10;
+
+            pos.set(p.id, { x, y: yPos, act });
+          });
+        });
+
+        return pos;
+      }
+
+      function render(h) {
+        timeLabel.text(hourLabel(h));
+        slider.property("value", h);
+
+        const pos = positionsForHour(h);
+
+        dotsG
+          .selectAll("circle.dot")
+          .transition()
+          .duration(650)
+          .ease(d3.easeCubicInOut)
+          .attr("cx", (d) => pos.get(d.id)?.x ?? innerW / 2)
+          .attr("cy", (d) => pos.get(d.id)?.y ?? innerH / 2)
+          .attr("fill", (d) => {
+            const act = pos.get(d.id)?.act;
+            return color(act) || "#999";
+          });
+      }
+
+      function play() {
+        playBtn.text("Pause");
+        timer = d3.interval(() => {
+          currentHour = (currentHour + 1) % 24;
+          render(currentHour);
+        }, 900);
+      }
+
+      function stop() {
+        playBtn.text("Play");
+        if (timer) timer.stop();
+        timer = null;
+      }
+    </script>
+  </body>
+</html>
