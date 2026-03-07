@@ -72,7 +72,6 @@
         text-align: justify;
       }
 
-      /* make the viz frame a column: controls on top, svg fills rest */
       .viz-frame {
         display: flex;
         flex-direction: column;
@@ -81,7 +80,6 @@
         min-height: 520px;
       }
 
-      /* controls styling */
       #controls {
         display: flex;
         gap: 12px;
@@ -94,8 +92,17 @@
 
       #chart {
         width: 100%;
-        flex: 1; /* fill remaining space in viz-frame */
+        flex: 1;
         min-height: 450px;
+      }
+
+      .blob {
+        mix-blend-mode: multiply;
+        opacity: 0.22;
+      }
+
+      .dot {
+        opacity: 0.9;
       }
 
       footer {
@@ -180,129 +187,109 @@
         "10pm-11pm",
         "11pm-12am",
       ];
-
+      const EXCLUDE = new Set(["Other (Please Specify Below)"]);
       const svg = d3.select("#chart");
-      const vizEl = document.getElementById("viz");
       const slider = d3.select("#timeSlider");
       const playBtn = d3.select("#playBtn");
       const timeLabel = d3.select("#timeLabel");
 
-      let width, height, margin, innerW, innerH;
+      let width, height, innerW, innerH;
+      let data = [];
+      let activities = [];
+      let color;
+      let currentHour = 0;
+      let timer = null;
+      let sim = null;
 
       function resize() {
         const rect = svg.node().getBoundingClientRect();
         width = rect.width;
         height = rect.height;
-
-        margin = { top: 20, right: 20, bottom: 20, left: 160 };
-        innerW = width - margin.left - margin.right;
-        innerH = height - margin.top - margin.bottom;
-
+        innerW = width;
+        innerH = height;
         svg.attr("viewBox", `0 0 ${width} ${height}`);
       }
-      
+
       resize();
 
       window.addEventListener("resize", () => {
         resize();
-        render(currentHour);
+        if (data.length) {
+          initLabels();
+          setHour(currentHour, true);
+        }
       });
 
-      const g = svg.append("g").attr("transform", `translate(${margin.left},${margin.top})`);
-      const laneAxisG = g.append("g");
+      const g = svg.append("g");
       const dotsG = g.append("g");
-
-      let data = [];
-      let activities = [];
-      let y = null;
-      let color = null;
-      let currentHour = 0;
-      let timer = null;
-
-      // Load clean data
-      d3.csv("/data/clean_data.csv").then((raw) => {
-        
-        // Assign an id per row
-        raw.forEach((d, i) => (d.respondent_id = i));
-
-        // Compact schedule array for each respondent: [hour0..hour23] = activity
-        data = raw.map((d) => ({
-          id: d.respondent_id,
-          schedule: HOUR_COLS.map((h) => (d[h] ?? "").trim()),
-        }));
-
-        const EXCLUDE = new Set(["Other (Please Specify Below)"]);
-
-        // Collect unique activities (exclude blanks)
-        const set = new Set();
-        data.forEach((p) =>
-          p.schedule.forEach((a) => {
-            if (a && !EXCLUDE.has(a)) set.add(a);
-          }),
-        );
-        activities = Array.from(set);
-
-        // Scales
-        y = d3
-          .scaleBand()
-          .domain(activities)
-          .range([0, innerH])
-          .paddingInner(0.15);
-
-        color = d3
-          .scaleOrdinal()
-          .domain(activities)
-          .range(d3.schemeTableau10.concat(d3.schemeSet3));
-
-        // Draw initial axes and dots
-        renderAxis();
-        initDots();
-        render(0);
-
-        // Controls
-        slider.on("input", (event) => {
-          currentHour = +event.target.value;
-          stop();
-          render(currentHour);
-        });
-
-        playBtn.on("click", () => {
-          if (timer) stop();
-          else play();
-        });
-      });
-
-      function renderAxis() {
-        laneAxisG.selectAll("*").remove();
-
-        // Lane separators
-        laneAxisG
-          .selectAll("line.lane")
-          .data(activities)
-          .join("line")
-          .attr("class", "lane")
-          .attr("x1", -margin.left + 10)
-          .attr("x2", innerW)
-          .attr("y1", (d) => y(d) + y.bandwidth())
-          .attr("y2", (d) => y(d) + y.bandwidth())
-          .attr("stroke", "rgba(0,0,0,0.08)");
-
-        // Labels
-        laneAxisG
-          .selectAll("text.label")
-          .data(activities)
-          .join("text")
-          .attr("class", "label")
-          .attr("x", -12)
-          .attr("y", (d) => y(d) + y.bandwidth() / 2)
-          .attr("text-anchor", "end")
-          .attr("dominant-baseline", "middle")
-          .style("font-family", "Source Serif 4, serif")
-          .style("font-size", "12px")
-          .style("fill", "rgba(0,0,0,0.75)")
-          .text((d) => d);
+      const labelsG = g.append("g");
+      function hourLabel(h) {
+        return HOUR_COLS[h] || `Hour ${h}`;
       }
 
+      // place activities in a circle around the center, with labels slightly outside
+      function activityTargets() {
+        const cx = innerW / 2;
+        const cy = innerH / 2;
+
+        const R = Math.min(innerW, innerH) * 0.45;
+        const labelR = R + 55;
+
+        const domain = activities.slice().sort(d3.ascending);
+
+        const targets = new Map();
+        domain.forEach((a, i) => {
+          const t = (i / domain.length) * (Math.PI * 2) - Math.PI / 2;
+          targets.set(a, {
+            x: cx + R * Math.cos(t),
+            y: cy + R * Math.sin(t),
+            lx: cx + labelR * Math.cos(t),
+            ly: cy + labelR * Math.sin(t),
+            theta: t,
+          });
+        });
+
+        return { targets, cx, cy, R, labelR, domain };
+      }
+
+      // initialize labels based on current activities
+      function initLabels() {
+        labelsG.selectAll("*").remove();
+
+        const { targets, domain, cx, cy } = activityTargets();
+        const labelOffset = 18;
+
+        const items = domain.map((d) => {
+          const t = targets.get(d);
+          const dx = t.x - cx;
+          const dy = t.y - cy;
+          const len = Math.hypot(dx, dy) || 1;
+
+          return {
+            key: d,
+            x: t.x,
+            y: t.y,
+            lx: t.x + (dx / len) * labelOffset,
+            ly: t.y + (dy / len) * labelOffset,
+          };
+        });
+
+        labelsG
+          .selectAll("text")
+          .data(items, (d) => d.key)
+          .join("text")
+          .attr("x", (d) => d.lx)
+          .attr("y", (d) => d.ly)
+          .attr("dominant-baseline", "middle")
+          .attr("text-anchor", (d) => (d.lx < cx ? "end" : "start"))
+          .style("font-family", "Source Serif 4, serif")
+          .style("font-size", "14px")
+          .style("fill", "#111")
+          .style("pointer-events", "none")
+          .text((d) => d.key);
+      }
+
+      // initialize dots based on current data
       function initDots() {
         dotsG
           .selectAll("circle.dot")
@@ -310,73 +297,114 @@
           .join("circle")
           .attr("class", "dot")
           .attr("r", 4)
-          .attr("cx", innerW / 2)
-          .attr("cy", innerH / 2)
-          .attr("fill", "#999")
+          .attr("cx", (d) => d.x)
+          .attr("cy", (d) => d.y)
+          .attr("fill", (d) => (d.act ? color(d.act) : "#bbb"))
           .attr("opacity", 0.9);
       }
 
-      function hourLabel(h) {
-        return HOUR_COLS[h] || `Hour ${h}`;
-      }
-
-    
-      function positionsForHour(h) {
-        if (!y) return new Map();
-        const byAct = d3.group(data, (d) => d.schedule[h] || "(Missing)");
-
-        let domain = activities.slice();
-        if (byAct.has("(Missing)") && !domain.includes("(Missing)"))
-          domain = domain.concat(["(Missing)"]);
-
-        y.domain(domain).range([0, innerH]);
-        renderAxis();
-
-        const pos = new Map();
-        domain.forEach((act) => {
-          const people = byAct.get(act) || [];
-          const n = people.length;
-
-    
-          const cols = Math.max(1, Math.floor(innerW / 12));
-          people.forEach((p, i) => {
-            const col = i % cols;
-            const row = Math.floor(i / cols);
-
-            const x = (col + 0.5) * (innerW / cols) + (Math.random() - 0.5) * 3;
-            const yPos = (y(act) ?? 0) + 10 + row * 10;
-
-            pos.set(p.id, { x, y: yPos, act });
+      // initialize force simulation
+      function initSimulation() {
+        sim = d3
+          .forceSimulation(data)
+          .velocityDecay(0.35)
+          .force("charge", d3.forceManyBody().strength(-2))
+          .force("collide", d3.forceCollide(6.2).iterations(2))
+          .on("tick", () => {
+            dotsG
+              .selectAll("circle.dot")
+              .attr("cx", (d) => d.x)
+              .attr("cy", (d) => d.y);
           });
-        });
 
-        return pos;
+        sim.alphaTarget(0);
       }
 
-      function render(h) {
+      // update activities and restart simulation for a given hour
+      function setHour(h) {
+        initLabels();
         timeLabel.text(hourLabel(h));
         slider.property("value", h);
 
-        const pos = positionsForHour(h);
+        data.forEach((p) => {
+          const a = p.schedule[h];
+          p.act = a && !EXCLUDE.has(a) ? a : null;
+        });
+
+        const { targets } = activityTargets();
+
+        sim.force(
+          "x",
+          d3
+            .forceX((d) => (d.act ? targets.get(d.act).x : innerW / 2))
+            .strength(0.55),
+        );
+        sim.force(
+          "y",
+          d3
+            .forceY((d) => (d.act ? targets.get(d.act).y : innerH / 2))
+            .strength(0.55),
+        );
 
         dotsG
           .selectAll("circle.dot")
-          .transition()
-          .duration(650)
-          .ease(d3.easeCubicInOut)
-          .attr("cx", (d) => pos.get(d.id)?.x ?? innerW / 2)
-          .attr("cy", (d) => pos.get(d.id)?.y ?? innerH / 2)
-          .attr("fill", (d) => {
-            const act = pos.get(d.id)?.act;
-            return color(act) || "#999";
-          });
+          .attr("fill", (d) => (d.act ? color(d.act) : "#bbb"));
+
+        sim.alpha(0.6).restart();
       }
 
+      // load and process data, then initialize visualization
+      d3.csv("/data/clean_data.csv").then((raw) => {
+        raw.forEach((d, i) => (d.respondent_id = i));
+
+        data = raw.map((d) => ({
+          id: d.respondent_id,
+          schedule: HOUR_COLS.map((h) => {
+            const a = (d[h] ?? "").trim().replace(/\s+/g, " ");
+            if (a.toLowerCase() === "chores/housework")
+              return "Chores/Housework";
+            return a;
+          }),
+          x: Math.random() * innerW,
+          y: Math.random() * innerH,
+        }));
+
+        const set = new Set();
+        data.forEach((p) =>
+          p.schedule.forEach((a) => {
+            if (!a || EXCLUDE.has(a)) return;
+            const norm = a.trim().replace(/\s+/g, " ");
+            set.add(norm);
+          }),
+        );
+        activities = Array.from(set).sort(d3.ascending);
+        console.log("Activities:", activities);
+
+        color = d3
+          .scaleOrdinal()
+          .domain(activities)
+          .range(d3.schemeTableau10.concat(d3.schemeSet3));
+
+        initLabels();
+        initDots();
+        initSimulation();
+        setHour(0, true);
+
+        slider.on("input", (event) => {
+          currentHour = +event.target.value;
+          stop();
+          setHour(currentHour);
+        });
+
+        playBtn.on("click", () => (timer ? stop() : play()));
+      });
+
+      // play and stop functions for the animation
       function play() {
         playBtn.text("Pause");
         timer = d3.interval(() => {
           currentHour = (currentHour + 1) % 24;
-          render(currentHour);
+          setHour(currentHour);
         }, 900);
       }
 
@@ -385,6 +413,7 @@
         if (timer) timer.stop();
         timer = null;
       }
+      
     </script>
   </body>
 </html>
