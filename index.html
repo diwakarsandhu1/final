@@ -457,7 +457,7 @@
       playBtn.on("click", () => (timer ? stop() : play()));
 
       // load data
-      d3.csv("data/clean_data.csv").then((raw) => {
+      d3.csv("../data/clean_data.csv").then((raw) => {
         raw.forEach((d, i) => (d.respondent_id = i));
 
         const MULTIPLIER = 4;
