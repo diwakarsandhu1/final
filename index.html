@@ -70,46 +70,87 @@
         line-height: 1.55;
         font-size: 1.05rem;
         text-align: justify;
+        margin-bottom: 18px;
       }
 
-      .viz-frame {
+      .viz-shell {
+        display: flex;
+        gap: 18px;
+        min-height: 520px;
+        align-items: stretch;
+      }
+
+      .sidebar {
+        width: 260px;
+        flex: 0 0 260px;
         display: flex;
         flex-direction: column;
-        gap: 12px;
-        padding: 18px;
-        min-height: 520px;
+        gap: 14px;
+        padding: 10px 0;
       }
 
-      #controls {
-        display: flex;
-        gap: 12px;
-        align-items: center;
-      }
-
-      #timeSlider {
+      .viz-area {
         flex: 1;
+        min-height: 520px;
       }
 
       #chart {
         width: 100%;
-        flex: 1;
-        min-height: 450px;
+        height: 520px;
+        display: block;
+        overflow: visible;
       }
 
-      .blob {
-        mix-blend-mode: multiply;
-        opacity: 0.22;
+      .time-block {
+        font-family:
+          ui-sans-serif,
+          system-ui,
+          -apple-system,
+          Segoe UI,
+          Roboto,
+          Arial,
+          sans-serif;
+        font-weight: 800;
+        font-size: 44px;
+        letter-spacing: 1px;
+        line-height: 1;
+        padding: 0;
+        border: none;
+        border-radius: 0;
+        background: transparent;
+      }
+
+      .btn-row {
+        display: flex;
+        gap: 10px;
+      }
+
+      button {
+        cursor: pointer;
+        border: 1px solid rgba(0, 0, 0, 0.18);
+        background: #fff;
+        border-radius: 10px;
+        padding: 8px 12px;
+        font-family: inherit;
+      }
+
+      button:hover {
+        background: rgba(0, 0, 0, 0.03);
+      }
+
+      .speed-label {
+        font-size: 0.95rem;
+        color: var(--muted);
+        margin-bottom: 6px;
+      }
+
+      .speedBtn.active {
+        background: rgba(0, 0, 0, 0.08);
+        border-color: rgba(0, 0, 0, 0.28);
       }
 
       .dot {
         opacity: 0.9;
-      }
-
-      footer {
-        text-align: center;
-        color: var(--muted);
-        font-size: 0.9rem;
-        padding-top: 6px;
       }
     </style>
   </head>
@@ -139,24 +180,30 @@
         </p>
       </section>
 
-      <main class="viz-frame" id="viz">
-        <div id="controls">
-          <button id="playBtn">Play</button>
-          <input
-            id="timeSlider"
-            type="range"
-            min="0"
-            max="23"
-            step="1"
-            value="0"
-          />
-          <span id="timeLabel">12am-1am</span>
-        </div>
+      <main class="viz-shell" id="viz">
+        <aside class="sidebar">
+          <div class="time-block" id="timeBig">12:00 AM</div>
 
-        <svg id="chart"></svg>
+          <div class="btn-row">
+            <button id="playBtn">Play</button>
+          </div>
+
+          <div class="speed">
+            <div class="speed-label">Speed</div>
+            <div class="btn-row">
+              <button class="speedBtn" data-speed="slow">Slow</button>
+              <button class="speedBtn active" data-speed="medium">
+                Medium
+              </button>
+              <button class="speedBtn" data-speed="fast">Fast</button>
+            </div>
+          </div>
+        </aside>
+
+        <section class="viz-area">
+          <svg id="chart"></svg>
+        </section>
       </main>
-
-      <footer>Data source: WPI student time-use survey</footer>
     </div>
 
     <script src="https://d3js.org/d3.v7.min.js"></script>
@@ -187,19 +234,27 @@
         "10pm-11pm",
         "11pm-12am",
       ];
+
       const EXCLUDE = new Set(["Other (Please Specify Below)"]);
+
       const svg = d3.select("#chart");
-      const slider = d3.select("#timeSlider");
       const playBtn = d3.select("#playBtn");
-      const timeLabel = d3.select("#timeLabel");
+      const timeBig = d3.select("#timeBig");
+      const speedBtns = d3.selectAll(".speedBtn");
 
       let width, height, innerW, innerH;
       let data = [];
       let activities = [];
       let color;
-      let currentHour = 0;
       let timer = null;
       let sim = null;
+
+      let currentMinute = 0; 
+      let currentHour = -1;
+
+      // speed (ms per minute tick)
+      const SPEED_MS = { slow: 220, medium: 90, fast: 25 };
+      let speed = "medium";
 
       function resize() {
         const rect = svg.node().getBoundingClientRect();
@@ -209,69 +264,81 @@
         innerH = height;
         svg.attr("viewBox", `0 0 ${width} ${height}`);
       }
-
       resize();
 
       window.addEventListener("resize", () => {
         resize();
         if (data.length) {
           initLabels();
-          setHour(currentHour, true);
+          applyHourForces(currentHour, true);
         }
       });
 
       const g = svg.append("g");
       const dotsG = g.append("g");
       const labelsG = g.append("g");
-      function hourLabel(h) {
-        return HOUR_COLS[h] || `Hour ${h}`;
+
+      function formatTime(minute) {
+        let h24 = Math.floor(minute / 60);
+        let m = minute % 60;
+        let ampm = h24 >= 12 ? "PM" : "AM";
+        let h12 = h24 % 12;
+        if (h12 === 0) h12 = 12;
+        return `${h12}:${String(m).padStart(2, "0")} ${ampm}`;
       }
 
-      // place activities in a circle around the center, with labels slightly outside
       function activityTargets() {
-        const cx = innerW / 2;
-        const cy = innerH / 2;
-
+        const pad = { l: 30, r: 90, t: 30, b: 30 };
+        const cx = (innerW - pad.l - pad.r) / 2 + pad.l;
+        const cy = (innerH - pad.t - pad.b) / 2 + pad.t;
         const R = Math.min(innerW, innerH) * 0.45;
-        const labelR = R + 55;
 
         const domain = activities.slice().sort(d3.ascending);
-
         const targets = new Map();
+
         domain.forEach((a, i) => {
           const t = (i / domain.length) * (Math.PI * 2) - Math.PI / 2;
           targets.set(a, {
             x: cx + R * Math.cos(t),
             y: cy + R * Math.sin(t),
-            lx: cx + labelR * Math.cos(t),
-            ly: cy + labelR * Math.sin(t),
             theta: t,
           });
         });
 
-        return { targets, cx, cy, R, labelR, domain };
+        return { targets, cx, cy, R, domain };
       }
 
-      // initialize labels based on current activities
       function initLabels() {
         labelsG.selectAll("*").remove();
-
         const { targets, domain, cx, cy } = activityTargets();
+
         const labelOffset = 18;
+        const safePad = 18;
+        const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
-        const items = domain.map((d) => {
-          const t = targets.get(d);
-          const dx = t.x - cx;
-          const dy = t.y - cy;
-          const len = Math.hypot(dx, dy) || 1;
+        const items = domain.map((key) => {
+          const t = targets.get(key);
+          const dx = t.x - cx,
+            dy = t.y - cy;
+          const len = Math.hypot(dx, dy) || 1;          
+          let lx = t.x + (dx / len) * labelOffset;
+          let ly = t.y + (dy / len) * labelOffset;
 
-          return {
-            key: d,
-            x: t.x,
-            y: t.y,
-            lx: t.x + (dx / len) * labelOffset,
-            ly: t.y + (dy / len) * labelOffset,
-          };
+          let anchor = lx < cx ? "end" : "start";
+
+          ly = clamp(ly, safePad, innerH - safePad);
+
+          if (lx < safePad + 40) {
+            anchor = "start";
+            lx = safePad + 40;
+          }
+          
+          if (lx > innerW - (safePad + 40)) {
+            anchor = "end";
+            lx = innerW - (safePad + 40);
+          }
+
+          return { key, lx, ly, anchor };
         });
 
         labelsG
@@ -281,7 +348,7 @@
           .attr("x", (d) => d.lx)
           .attr("y", (d) => d.ly)
           .attr("dominant-baseline", "middle")
-          .attr("text-anchor", (d) => (d.lx < cx ? "end" : "start"))
+          .attr("text-anchor", (d) => d.anchor)
           .style("font-family", "Source Serif 4, serif")
           .style("font-size", "14px")
           .style("fill", "#111")
@@ -289,7 +356,6 @@
           .text((d) => d.key);
       }
 
-      // initialize dots based on current data
       function initDots() {
         dotsG
           .selectAll("circle.dot")
@@ -303,12 +369,11 @@
           .attr("opacity", 0.9);
       }
 
-      // initialize force simulation
       function initSimulation() {
         sim = d3
           .forceSimulation(data)
-          .velocityDecay(0.35)
-          .force("charge", d3.forceManyBody().strength(-2))
+          .velocityDecay(0.8) // more damping = less jitter
+          .force("charge", d3.forceManyBody().strength(-1.5))
           .force("collide", d3.forceCollide(6.2).iterations(2))
           .on("tick", () => {
             dotsG
@@ -320,14 +385,11 @@
         sim.alphaTarget(0);
       }
 
-      // update activities and restart simulation for a given hour
-      function setHour(h) {
-        initLabels();
-        timeLabel.text(hourLabel(h));
-        slider.property("value", h);
+      function applyHourForces(hourIdx, instant = false) {
+        if (hourIdx < 0) return;
 
         data.forEach((p) => {
-          const a = p.schedule[h];
+          const a = p.schedule[hourIdx];
           p.act = a && !EXCLUDE.has(a) ? a : null;
         });
 
@@ -337,75 +399,43 @@
           "x",
           d3
             .forceX((d) => (d.act ? targets.get(d.act).x : innerW / 2))
-            .strength(0.55),
+            .strength(0.7),
         );
         sim.force(
           "y",
           d3
             .forceY((d) => (d.act ? targets.get(d.act).y : innerH / 2))
-            .strength(0.55),
+            .strength(0.7),
         );
 
         dotsG
           .selectAll("circle.dot")
           .attr("fill", (d) => (d.act ? color(d.act) : "#bbb"));
 
-        sim.alpha(0.6).restart();
+        sim.alpha(instant ? 1.0 : 0.65).restart();
       }
 
-      // load and process data, then initialize visualization
-      d3.csv("/data/clean_data.csv").then((raw) => {
-        raw.forEach((d, i) => (d.respondent_id = i));
+      // minute-by-minute time setter
+      function setMinute(minute, instant = false) {
+        currentMinute = (minute + 1440) % 1440;
+        timeBig.text(formatTime(currentMinute));
 
-        data = raw.map((d) => ({
-          id: d.respondent_id,
-          schedule: HOUR_COLS.map((h) => {
-            const a = (d[h] ?? "").trim().replace(/\s+/g, " ");
-            if (a.toLowerCase() === "chores/housework")
-              return "Chores/Housework";
-            return a;
-          }),
-          x: Math.random() * innerW,
-          y: Math.random() * innerH,
-        }));
+        const h = Math.floor(currentMinute / 60);
+        if (h !== currentHour) {
+          currentHour = h;
+          initLabels();
+          applyHourForces(currentHour, instant);
+        }
+      }
 
-        const set = new Set();
-        data.forEach((p) =>
-          p.schedule.forEach((a) => {
-            if (!a || EXCLUDE.has(a)) return;
-            const norm = a.trim().replace(/\s+/g, " ");
-            set.add(norm);
-          }),
-        );
-        activities = Array.from(set).sort(d3.ascending);
-        console.log("Activities:", activities);
-
-        color = d3
-          .scaleOrdinal()
-          .domain(activities)
-          .range(d3.schemeTableau10.concat(d3.schemeSet3));
-
-        initLabels();
-        initDots();
-        initSimulation();
-        setHour(0, true);
-
-        slider.on("input", (event) => {
-          currentHour = +event.target.value;
-          stop();
-          setHour(currentHour);
-        });
-
-        playBtn.on("click", () => (timer ? stop() : play()));
-      });
-
-      // play and stop functions for the animation
+      // play/pause controls
       function play() {
         playBtn.text("Pause");
+        if (timer) timer.stop();
+
         timer = d3.interval(() => {
-          currentHour = (currentHour + 1) % 24;
-          setHour(currentHour);
-        }, 900);
+          setMinute(currentMinute + 1);
+        }, SPEED_MS[speed]);
       }
 
       function stop() {
@@ -413,7 +443,68 @@
         if (timer) timer.stop();
         timer = null;
       }
-      
+
+      // speed buttons
+      speedBtns.on("click", function () {
+        speedBtns.classed("active", false);
+        d3.select(this).classed("active", true);
+        speed = this.dataset.speed;
+
+        if (timer) play();
+      });
+
+      // play button
+      playBtn.on("click", () => (timer ? stop() : play()));
+
+      // load data
+      d3.csv("/data/clean_data.csv").then((raw) => {
+        raw.forEach((d, i) => (d.respondent_id = i));
+
+        const MULTIPLIER = 4;
+
+        data = [];
+        raw.forEach((d, i) => {
+          const schedule = HOUR_COLS.map((h) => {
+            const a = (d[h] ?? "").trim().replace(/\s+/g, " ");
+            if (a.toLowerCase() === "chores/housework")
+              return "Chores/Housework";
+            return a;
+          });
+
+          for (let k = 0; k < MULTIPLIER; k++) {
+            data.push({
+              id: `${i}-${k}`, 
+              base_id: i,
+              schedule,
+              x: Math.random() * innerW,
+              y: Math.random() * innerH,
+              act: null,
+            });
+          }
+        });
+
+        const set = new Set();
+        data.forEach((p) =>
+          p.schedule.forEach((a) => {
+            if (!a || EXCLUDE.has(a)) return;
+            set.add(a);
+          }),
+        );
+        activities = Array.from(set).sort(d3.ascending);
+
+        color = d3
+          .scaleOrdinal()
+          .domain(activities)
+          .range(d3.schemeTableau10.concat(d3.schemeSet3));
+
+        // initialize visualization
+        initLabels();
+        initDots();
+        initSimulation();
+
+        // start at midnight
+        setMinute(0, true);
+      });
     </script>
   </body>
 </html>
